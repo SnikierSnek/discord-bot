@@ -15,6 +15,7 @@ if not TOKEN:
 WAIT_THRESHOLD_POINTS = 1950
 WAIT_SECONDS = 15
 MAX_MESSAGE_LENGTH = 1950
+MAX_ATTACHMENT_BYTES = 1_000_000  # 1 MB safety cap
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -244,6 +245,57 @@ def contains_list_content(text):
     return False
 
 
+async def read_text_attachments(message):
+    """
+    Reads small text-like attachments and returns one combined string.
+    """
+    allowed_extensions = (".txt", ".log", ".list", ".md")
+    parts = []
+
+    for attachment in message.attachments:
+        filename = attachment.filename.lower()
+
+        if not filename.endswith(allowed_extensions):
+            continue
+
+        if attachment.size and attachment.size > MAX_ATTACHMENT_BYTES:
+            print(f"Skipping large attachment: {attachment.filename} ({attachment.size} bytes)")
+            continue
+
+        try:
+            data = await attachment.read()
+
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                text = data.decode("latin-1", errors="ignore")
+
+            if text.strip():
+                parts.append(text)
+                print(f"Read attachment: {attachment.filename}")
+
+        except Exception as e:
+            print(f"Failed to read attachment {attachment.filename}: {e}")
+
+    return "\n".join(parts)
+
+
+async def get_message_list_text(message):
+    """
+    Combines normal message content and supported text attachment contents.
+    """
+    content_parts = []
+
+    if message.content and message.content.strip():
+        content_parts.append(message.content.strip())
+
+    attachment_text = await read_text_attachments(message)
+    if attachment_text.strip():
+        content_parts.append(attachment_text)
+
+    return "\n".join(content_parts).strip()
+
+
 async def send_compacted_list(channel, text):
     chunks = split_long_message(text, MAX_MESSAGE_LENGTH - 10)
     for chunk in chunks:
@@ -312,9 +364,9 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    print(f"Message seen from {message.author}: {message.content[:120]!r}")
+    content = await get_message_list_text(message)
+    print(f"Message seen from {message.author}: {content[:120]!r}")
 
-    content = message.content.strip()
     if not content:
         return
 
