@@ -12,9 +12,6 @@ TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("DISCORD_BOT_TOKEN is not set.")
 
-if "PASTE" in TOKEN or len(TOKEN) < 50:
-    raise ValueError("Invalid token detected.")
-
 WAIT_THRESHOLD_POINTS = 1950
 WAIT_SECONDS = 15
 MAX_MESSAGE_LENGTH = 1950
@@ -75,23 +72,23 @@ def split_long_message(text, max_len=MAX_MESSAGE_LENGTH):
 
 def parse_enhancement_line(line):
     stripped = line.strip()
-    stripped = re.sub(r"^[•\\-\\*]\\s*", "", stripped)
+    stripped = re.sub(r"^[•\-\*]\s*", "", stripped)
 
     m = re.match(
-        r"^Enhancement:\\s*(?P<name>.+?)\\s*\\(\\+(?P<pts>\\d+)\\s*(?:pts?|points?|p)\\)\\s*$",
+        r"^Enhancement:\s*(?P<name>.+?)\s*\(\+(?P<pts>\d+)\s*(?:pts?|points?|p)\)\s*$",
         stripped,
         re.IGNORECASE,
     )
     if m:
         enh_name = m.group("name").strip()
-        enh_name = re.sub(r"\\s*\\(Aura\\)\\s*$", "", enh_name, flags=re.IGNORECASE)
+        enh_name = re.sub(r"\s*\(Aura\)\s*$", "", enh_name, flags=re.IGNORECASE)
         enh_pts = m.group("pts").strip()
         return f"{enh_name} +{enh_pts}p"
 
-    m = re.match(r"^Enhancement:\\s*(?P<name>.+?)\\s*$", stripped, re.IGNORECASE)
+    m = re.match(r"^Enhancement:\s*(?P<name>.+?)\s*$", stripped, re.IGNORECASE)
     if m:
         enh_name = m.group("name").strip()
-        enh_name = re.sub(r"\\s*\\(Aura\\)\\s*$", "", enh_name, flags=re.IGNORECASE)
+        enh_name = re.sub(r"\s*\(Aura\)\s*$", "", enh_name, flags=re.IGNORECASE)
         return enh_name
 
     return None
@@ -104,9 +101,9 @@ def shorten_warhammer_list(raw_text):
     total_points = 0
 
     unit_patterns = [
-        r"^(?P<prefix>[A-Za-z]+\\d+:\\s*)?(?P<count>\\d+x\\s+)?(?P<name>.+?)\\s*\\((?P<pts>\\d+)\\s*(?:pts?|points?|p)\\)\\s*:",
-        r"^(?P<prefix>[A-Za-z]+\\d+:\\s*)?(?P<count>\\d+x\\s+)?(?P<name>.+?)\\s*\\((?P<pts>\\d+)\\s*(?:pts?|points?|p)\\)\\s*$",
-        r"^(?P<prefix>[A-Za-z]+\\d+:\\s*)?(?P<count>\\d+x\\s+)?(?P<name>.+?)\\s*[-–—]\\s*(?P<pts>\\d+)\\s*(?:pts?|points?|p)\\s*$",
+        r"^(?P<prefix>[A-Za-z]+\d+:\s*)?(?P<count>\d+x\s+)?(?P<name>.+?)\s*\((?P<pts>\d+)\s*(?:pts?|points?|p)\)\s*:",
+        r"^(?P<prefix>[A-Za-z]+\d+:\s*)?(?P<count>\d+x\s+)?(?P<name>.+?)\s*\((?P<pts>\d+)\s*(?:pts?|points?|p)\)\s*$",
+        r"^(?P<prefix>[A-Za-z]+\d+:\s*)?(?P<count>\d+x\s+)?(?P<name>.+?)\s*[-–—]\s*(?P<pts>\d+)\s*(?:pts?|points?|p)\s*$",
     ]
 
     ignored_headers = (
@@ -153,7 +150,7 @@ def shorten_warhammer_list(raw_text):
         if lower_line.startswith(ignored_headers):
             continue
 
-        if re.match(r"^[•\\-\\*]\\s*\\d+x?\\s+", line):
+        if re.match(r"^[•\-\*]\s*\d+x?\s+", line):
             continue
 
         enhancement = parse_enhancement_line(line)
@@ -196,7 +193,7 @@ def shorten_warhammer_list(raw_text):
     if not formatted:
         return "No valid units found.", 0, 0
 
-    return "\\n".join(formatted), total_points, len(results)
+    return "\n".join(formatted), total_points, len(results)
 
 
 def looks_like_warhammer_list(text):
@@ -208,13 +205,13 @@ def looks_like_warhammer_list(text):
 
     for line in lines:
         if re.match(
-            r"^(?:[A-Za-z]+\\d+:\\s*)?(?:\\d+x\\s+)?(.+?)\\s*\\((\\d+)\\s*(?:pts?|points?|p)\\)\\s*:?\\s*$",
+            r"^(?:[A-Za-z]+\d+:\s*)?(?:\d+x\s+)?(.+?)\s*\((\d+)\s*(?:pts?|points?|p)\)\s*:?\s*$",
             line,
             re.IGNORECASE,
         ):
             unit_like_count += 1
         elif re.match(
-            r"^(?:[A-Za-z]+\\d+:\\s*)?(?:\\d+x\\s+)?(.+?)\\s*[-–—]\\s*(\\d+)\\s*(?:pts?|points?|p)\\s*$",
+            r"^(?:[A-Za-z]+\d+:\s*)?(?:\d+x\s+)?(.+?)\s*[-–—]\s*(\d+)\s*(?:pts?|points?|p)\s*$",
             line,
             re.IGNORECASE,
         ):
@@ -230,18 +227,18 @@ def contains_list_content(text):
 
     for line in lines:
         if re.match(
-            r"^(?:[A-Za-z]+\\d+:\\s*)?(?:\\d+x\\s+)?(.+?)\\s*\\((\\d+)\\s*(?:pts?|points?|p)\\)\\s*:?\\s*$",
+            r"^(?:[A-Za-z]+\d+:\s*)?(?:\d+x\s+)?(.+?)\s*\((\d+)\s*(?:pts?|points?|p)\)\s*:?\s*$",
             line,
             re.IGNORECASE,
         ):
             return True
         if re.match(
-            r"^(?:[A-Za-z]+\\d+:\\s*)?(?:\\d+x\\s+)?(.+?)\\s*[-–—]\\s*(\\d+)\\s*(?:pts?|points?|p)\\s*$",
+            r"^(?:[A-Za-z]+\d+:\s*)?(?:\d+x\s+)?(.+?)\s*[-–—]\s*(\d+)\s*(?:pts?|points?|p)\s*$",
             line,
             re.IGNORECASE,
         ):
             return True
-        if re.match(r"^[•\\-\\*]?\\s*Enhancement:\\s*.+$", line, re.IGNORECASE):
+        if re.match(r"^[•\-\*]?\s*Enhancement:\s*.+$", line, re.IGNORECASE):
             return True
 
     return False
@@ -282,10 +279,12 @@ async def process_pending_list(channel_id, author_id):
     if channel is None:
         return
 
-    combined_text = "\\n".join(entry["parts"])
+    combined_text = "\n".join(entry["parts"])
     original_messages = entry["messages"]
 
+    print(f"Processing pending list for user {author_id}")
     result, total_points, unit_count = shorten_warhammer_list(combined_text)
+    print(f"Pending parse result: total_points={total_points}, unit_count={unit_count}")
 
     if result != "No valid units found.":
         await send_compacted_list(channel, result)
@@ -313,6 +312,8 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    print(f"Message seen from {message.author}: {message.content[:120]!r}")
+
     content = message.content.strip()
     if not content:
         return
@@ -320,8 +321,10 @@ async def on_message(message):
     key = (message.channel.id, message.author.id)
 
     if content.startswith("!wl"):
+        print("Manual command detected")
         text = content[3:].strip()
         result, total_points, unit_count = shorten_warhammer_list(text)
+        print(f"Manual parse: total_points={total_points}, unit_count={unit_count}")
 
         if result != "No valid units found.":
             await send_compacted_list(message.channel, result)
@@ -339,33 +342,44 @@ async def on_message(message):
         return
 
     if key in pending_lists:
+        print("Pending list exists for this user/channel")
         if contains_list_content(content):
+            print("Follow-up chunk accepted")
             pending_lists[key]["parts"].append(content)
             pending_lists[key]["messages"].append(message)
 
-            combined_text = "\\n".join(pending_lists[key]["parts"])
+            combined_text = "\n".join(pending_lists[key]["parts"])
             result, total_points, unit_count = shorten_warhammer_list(combined_text)
+            print(f"Combined parse: total_points={total_points}, unit_count={unit_count}")
 
             old_task = pending_lists[key]["task"]
             old_task.cancel()
 
             if total_points >= WAIT_THRESHOLD_POINTS:
+                print("Threshold reached, processing immediately")
                 await process_pending_list(message.channel.id, message.author.id)
             else:
+                print("Still below threshold, restarting timer")
                 new_task = asyncio.create_task(
                     delayed_process_list(message.channel.id, message.author.id)
                 )
                 pending_lists[key]["task"] = new_task
             return
 
-    if looks_like_warhammer_list(content):
+    is_list = looks_like_warhammer_list(content)
+    print(f"looks_like_warhammer_list = {is_list}")
+
+    if is_list:
         result, total_points, unit_count = shorten_warhammer_list(content)
+        print(f"Fresh parse: total_points={total_points}, unit_count={unit_count}")
 
         if result == "No valid units found.":
+            print("List-like message but parser found no valid units")
             await bot.process_commands(message)
             return
 
         if total_points >= WAIT_THRESHOLD_POINTS:
+            print("Threshold reached immediately, sending compacted list")
             await send_compacted_list(message.channel, result)
 
             try:
@@ -378,6 +392,7 @@ async def on_message(message):
                 print(f"Could not delete message: {e}")
                 await message.channel.send("I compacted the list, but I could not delete the original message.")
         else:
+            print("Below threshold, starting pending timer")
             task = asyncio.create_task(
                 delayed_process_list(message.channel.id, message.author.id)
             )
