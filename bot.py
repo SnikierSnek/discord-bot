@@ -47,8 +47,8 @@ def run_health_server():
 
 def clean_unit_name(name: str) -> str:
     name = name.strip()
-    name = re.sub(r"^[A-Za-z]+\d+:\s*", "", name)   # Char1:
-    name = re.sub(r"^\d+x\s+", "", name, flags=re.IGNORECASE)  # 1x Unit
+    name = re.sub(r"^[A-Za-z]+\d+:\s*", "", name)
+    name = re.sub(r"^\d+x\s+", "", name, flags=re.IGNORECASE)
     name = re.sub(r"[\-–—:;,]+$", "", name).strip()
     return name
 
@@ -125,15 +125,6 @@ def is_ignored_weapon_item(item: str) -> bool:
 
 
 def extract_inline_enhancements_and_strip(text: str):
-    """
-    Extract inline enhancements like:
-    Augury Halo [20 pts]
-    Font of Spores (Aura) [20 pts]
-
-    Returns:
-        enhancements (list[str])
-        stripped_text (str)
-    """
     enhancements = []
 
     pattern = re.compile(
@@ -148,8 +139,6 @@ def extract_inline_enhancements_and_strip(text: str):
         return ""
 
     stripped = pattern.sub(replacer, text)
-
-    # Clean up repeated commas/spaces after removals
     stripped = re.sub(r"\s*,\s*,", ", ", stripped)
     stripped = re.sub(r"^\s*,\s*", "", stripped)
     stripped = re.sub(r"\s*,\s*$", "", stripped)
@@ -159,23 +148,11 @@ def extract_inline_enhancements_and_strip(text: str):
 
 
 def add_weapons_from_text(counter: dict, text: str, multiplier: int = 1):
-    """
-    Parse a text segment of weapons and add them to a weapon counter.
-    Works for:
-      Plasma decimator, Titanic feet, 2x Twin meltagun
-      Astartes shield, Power weapon
-      2 shieldbreaker missile launchers and twin siegebreaker cannon (2x Shieldbreaker missile launcher, Twin siegebreaker cannon)
-
-    Strategy:
-    - If a parenthetical canonical weapon list exists, use that.
-    - Otherwise split top-level commas.
-    """
     if not text:
         return
 
     text = text.strip()
 
-    # If a parenthetical canonical list exists, use it
     paren_match = re.search(r"\(([^()]*)\)\s*$", text)
     if paren_match:
         inside = paren_match.group(1).strip()
@@ -189,7 +166,6 @@ def add_weapons_from_text(counter: dict, text: str, multiplier: int = 1):
         if not item or is_ignored_weapon_item(item):
             continue
 
-        # "2x Twin meltagun"
         m = re.match(r"^(?P<count>\d+)x\s+(?P<name>.+)$", item, re.IGNORECASE)
         if m:
             count = int(m.group("count"))
@@ -197,7 +173,6 @@ def add_weapons_from_text(counter: dict, text: str, multiplier: int = 1):
             add_count(counter, name, count * multiplier)
             continue
 
-        # "2 Acastus autocannons"
         m = re.match(r"^(?P<count>\d+)\s+(?P<name>.+)$", item, re.IGNORECASE)
         if m and not item.lower().startswith("1 with") and not item.lower().startswith("2 with"):
             count = int(m.group("count"))
@@ -205,7 +180,6 @@ def add_weapons_from_text(counter: dict, text: str, multiplier: int = 1):
             add_count(counter, name, count * multiplier)
             continue
 
-        # plain weapon
         add_count(counter, normalize_weapon_name(item), 1 * multiplier)
 
 
@@ -231,6 +205,22 @@ def parse_standalone_enhancement_line(line: str):
     return None
 
 
+def parse_bullet_enhancement_line(stripped: str):
+    text = re.sub(r"^[•\-\*]\s*", "", stripped).strip()
+
+    m = re.match(
+        r"^(?P<name>.+?)\s*\(\+(?P<pts>\d+)\s*(?:pts?|points?|p)\)\s*$",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        name = re.sub(r"\s*\(Aura\)\s*$", "", m.group("name").strip(), flags=re.IGNORECASE)
+        pts = m.group("pts").strip()
+        return f"{name} +{pts}p"
+
+    return None
+
+
 def format_unit_output(unit: dict) -> str:
     parts = [unit["name"]]
 
@@ -248,7 +238,7 @@ def format_unit_output(unit: dict) -> str:
 
 
 def parse_regular_formats(raw_text: str):
-    lines = raw_text.splitlines()
+    raw_lines = raw_text.splitlines()
     results = []
     current_unit = None
     total_points = 0
@@ -295,28 +285,37 @@ def parse_regular_formats(raw_text: str):
         "configuration",
     }
 
-    for raw_line in lines:
-        line = raw_line.rstrip()
-        stripped = line.strip()
+    i = 0
+    while i < len(raw_lines):
+        raw_line = raw_lines[i]
+        stripped = raw_line.strip()
 
         if not stripped:
+            i += 1
             continue
 
         lower_line = stripped.lower()
 
         if set(stripped) == {"+"}:
+            i += 1
             continue
 
         if lower_line.startswith(ignored_headers):
+            i += 1
             continue
 
-        # Standalone enhancement line
         enh = parse_standalone_enhancement_line(stripped)
         if enh and current_unit is not None:
             current_unit["enhancements"].append(enh)
+            i += 1
             continue
 
-        # Top-level unit line with (...) or [...]
+        enh = parse_bullet_enhancement_line(stripped)
+        if enh and current_unit is not None:
+            current_unit["enhancements"].append(enh)
+            i += 1
+            continue
+
         unit_match = re.match(
             r"^(?P<name>.+?)\s*[\(\[](?P<pts>\d+)\s*(?:pts?|points?|p)[\)\]]\s*:?\s*(?P<rest>.*)$",
             stripped,
@@ -328,19 +327,16 @@ def parse_regular_formats(raw_text: str):
             pts = int(unit_match.group("pts"))
             rest = unit_match.group("rest").strip()
 
-            # Skip roster title lines like:
-            # Chaos - Chaos Daemons - pleg - [2000 pts]
-            # Imperium - Imperial Knights - test - [1990 pts]
             if not results and pts >= 1500 and " - " in unit_name:
                 current_unit = None
+                i += 1
                 continue
 
-            # Skip section totals like Character [805 pts]
             if unit_name.lower() in ignored_section_names:
                 current_unit = None
+                i += 1
                 continue
 
-            # Create a new unit
             current_unit = {
                 "name": unit_name,
                 "pts": pts,
@@ -351,64 +347,65 @@ def parse_regular_formats(raw_text: str):
             total_points += pts
             points_found = True
 
-            # Parse inline enhancements + weapons
             if rest:
                 inline_enh, stripped_rest = extract_inline_enhancements_and_strip(rest)
                 current_unit["enhancements"].extend(inline_enh)
                 add_weapons_from_text(current_unit["weapons"], stripped_rest, 1)
 
+            i += 1
             continue
 
-        # If we don't have a current unit, nothing below can belong to a unit
         if current_unit is None:
+            i += 1
             continue
 
-        # Ignore pure sub-model header lines with no weapons
-        # e.g. "• 1x Watch Sergeant"
-        if re.match(r"^[•\-\*]\s*\d+x\s+[A-Za-z].*$", stripped) and ":" not in stripped and " with " not in stripped.lower():
-            continue
-
-        # WTC / GW / NR model-with-weapon patterns
-
-        # "1 with Plasma decimator, Titanic feet, 2x Twin meltagun"
         m = re.match(r"^(?P<count>\d+)\s+with\s+(?P<items>.+)$", stripped, re.IGNORECASE)
         if m:
             count = int(m.group("count"))
             items = m.group("items").strip()
             add_weapons_from_text(current_unit["weapons"], items, count)
+            i += 1
             continue
 
-        # "• 4x Veteran w/ Astartes shield and power weapon: Astartes shield, Power weapon"
         m = re.match(r"^[•\-\*]\s*(?P<count>\d+)x\s+.+?:\s*(?P<items>.+)$", stripped, re.IGNORECASE)
         if m:
             count = int(m.group("count"))
             items = m.group("items").strip()
             add_weapons_from_text(current_unit["weapons"], items, count)
+            i += 1
             continue
 
-        # "• 1x Watch Sergeant: Close combat weapon, Frag cannon"
-        m = re.match(r"^[•\-\*]\s*(?P<count>\d+)x\s+.+?:\s*(?P<items>.+)$", stripped, re.IGNORECASE)
-        if m:
-            count = int(m.group("count"))
-            items = m.group("items").strip()
-            add_weapons_from_text(current_unit["weapons"], items, count)
-            continue
-
-        # "• 4x Power weapon"
         m = re.match(r"^[•\-\*]\s*(?P<count>\d+)x\s+(?P<item>.+)$", stripped, re.IGNORECASE)
         if m:
             count = int(m.group("count"))
             item = m.group("item").strip()
-            add_weapons_from_text(current_unit["weapons"], item, count)
+
+            is_model_header = False
+            next_index = i + 1
+            current_indent = len(raw_line) - len(raw_line.lstrip(" "))
+
+            while next_index < len(raw_lines):
+                next_raw = raw_lines[next_index]
+                next_stripped = next_raw.strip()
+
+                if not next_stripped:
+                    next_index += 1
+                    continue
+
+                next_indent = len(next_raw) - len(next_raw.lstrip(" "))
+
+                if next_stripped.startswith(("•", "-", "*")) and next_indent > current_indent and ":" not in stripped:
+                    is_model_header = True
+
+                break
+
+            if not is_model_header:
+                add_weapons_from_text(current_unit["weapons"], item, count)
+
+            i += 1
             continue
 
-        # "• 1x Plasma decimator"
-        m = re.match(r"^[•\-\*]\s*(?P<count>\d+)x\s+(?P<item>.+)$", stripped, re.IGNORECASE)
-        if m:
-            count = int(m.group("count"))
-            item = m.group("item").strip()
-            add_weapons_from_text(current_unit["weapons"], item, count)
-            continue
+        i += 1
 
     return results, total_points, points_found
 
@@ -421,11 +418,6 @@ def looks_like_2hg_csv(text: str) -> bool:
 
 
 def parse_2hg_csv(text: str):
-    """
-    2HG does not include points in the sample you gave.
-    So this parser can summarize weapons, but total_points stays 0.
-    Repeated unit names are grouped together.
-    """
     grouped = {}
 
     try:
@@ -670,8 +662,6 @@ async def on_message(message):
             old_task = pending_lists[key]["task"]
             old_task.cancel()
 
-            # If points are found and threshold is reached, send immediately.
-            # If no points are found (e.g. 2HG CSV), keep waiting and then send after timer.
             if points_found and total_points >= WAIT_THRESHOLD_POINTS:
                 await process_pending_list(message.channel.id, message.author.id)
             else:
