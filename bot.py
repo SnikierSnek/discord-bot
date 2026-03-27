@@ -59,14 +59,14 @@ def split_long_message(text: str, max_len: int = MAX_MESSAGE_LENGTH):
     chunks = []
     current = ""
 
-    for paragraph in text.split("\n\n"):
-        candidate = paragraph if not current else current + "\n\n" + paragraph
+    for block in text.split("\n\n"):
+        candidate = block if not current else current + "\n\n" + block
         if len(candidate) <= max_len:
             current = candidate
         else:
             if current:
                 chunks.append(current)
-            current = paragraph
+            current = block
 
     if current:
         chunks.append(current)
@@ -116,6 +116,27 @@ def normalize_weapon_name(name: str) -> str:
     return name
 
 
+def pretty_name(text: str) -> str:
+    keep_upper = {"ccw", "dw", "dwk", "las", "melta"}
+    words = []
+
+    for word in text.split():
+        if word.lower() in keep_upper:
+            words.append(word.upper())
+            continue
+
+        if "-" in word:
+            parts = word.split("-")
+            words.append("-".join(p.capitalize() if p else p for p in parts))
+        else:
+            if word.isupper():
+                words.append(word)
+            else:
+                words.append(word.capitalize())
+
+    return " ".join(words)
+
+
 def is_ignored_weapon_item(item: str) -> bool:
     lowered = item.strip().lower()
     ignored = {
@@ -151,7 +172,7 @@ def extract_inline_enhancements_and_strip(text: str):
     def replacer(match):
         name = match.group("name").strip()
         pts = match.group("pts").strip()
-        enhancements.append(f"{name} +{pts}p")
+        enhancements.append(f"{pretty_name(name)} (+{pts}p)")
         return ""
 
     stripped = pattern.sub(replacer, text)
@@ -185,18 +206,18 @@ def add_weapons_from_text(counter: dict, text: str):
         m = re.match(r"^(?P<count>\d+)x\s+(?P<name>.+)$", item, re.IGNORECASE)
         if m:
             count = int(m.group("count"))
-            name = normalize_weapon_name(m.group("name"))
+            name = pretty_name(normalize_weapon_name(m.group("name")))
             add_count(counter, name, count)
             continue
 
         m = re.match(r"^(?P<count>\d+)\s+(?P<name>.+)$", item, re.IGNORECASE)
         if m and not item.lower().startswith("1 with") and not item.lower().startswith("2 with"):
             count = int(m.group("count"))
-            name = normalize_weapon_name(m.group("name"))
+            name = pretty_name(normalize_weapon_name(m.group("name")))
             add_count(counter, name, count)
             continue
 
-        add_count(counter, normalize_weapon_name(item), 1)
+        add_count(counter, pretty_name(normalize_weapon_name(item)), 1)
 
 
 def parse_standalone_enhancement_line(line: str):
@@ -211,12 +232,12 @@ def parse_standalone_enhancement_line(line: str):
     if m:
         enh_name = re.sub(r"\s*\(Aura\)\s*$", "", m.group("name").strip(), flags=re.IGNORECASE)
         enh_pts = m.group("pts").strip()
-        return f"{enh_name} +{enh_pts}p"
+        return f"{pretty_name(enh_name)} (+{enh_pts}p)"
 
     m = re.match(r"^Enhancement[s]?:\s*(?P<name>.+?)\s*$", stripped, re.IGNORECASE)
     if m:
         enh_name = re.sub(r"\s*\(Aura\)\s*$", "", m.group("name").strip(), flags=re.IGNORECASE)
-        return enh_name
+        return pretty_name(enh_name)
 
     return None
 
@@ -232,7 +253,7 @@ def parse_bullet_enhancement_line(stripped: str):
     if m:
         name = re.sub(r"\s*\(Aura\)\s*$", "", m.group("name").strip(), flags=re.IGNORECASE)
         pts = m.group("pts").strip()
-        return f"{name} +{pts}p"
+        return f"{pretty_name(name)} (+{pts}p)"
 
     m = re.match(
         r"^(?:Enhancements?|Enhancement):\s*(?P<name>.+)$",
@@ -240,7 +261,7 @@ def parse_bullet_enhancement_line(stripped: str):
         re.IGNORECASE,
     )
     if m:
-        return m.group("name").strip()
+        return pretty_name(m.group("name").strip())
 
     return None
 
@@ -261,17 +282,16 @@ def is_probable_title_line(name: str, pts: int) -> bool:
 def parse_metadata(raw_text: str):
     lines = raw_text.splitlines()
 
-    army = None
+    faction = None
     detachment = None
     total_points = None
 
-    # Explicit metadata
     for line in lines:
         stripped = line.strip()
 
         m = re.match(r"^\+\s*FACTION KEYWORD:\s*(.+)$", stripped, re.IGNORECASE)
-        if m and not army:
-            army = m.group(1).strip()
+        if m and not faction:
+            faction = m.group(1).strip()
 
         m = re.match(r"^(?:Detachment:|\+\s*DETACHMENT:)\s*(.+)$", stripped, re.IGNORECASE)
         if m and not detachment:
@@ -281,10 +301,10 @@ def parse_metadata(raw_text: str):
         if m and not total_points:
             total_points = int(m.group(1))
 
-    # New Recruit / GW style total points
     if total_points is None:
         for line in lines:
             stripped = line.strip()
+
             m = re.search(r"\((\d+)\s*Points?\)", stripped, re.IGNORECASE)
             if m:
                 value = int(m.group(1))
@@ -299,27 +319,21 @@ def parse_metadata(raw_text: str):
                     total_points = value
                     break
 
-    # GW app style army / detachment
-    if army is None or detachment is None:
+    if faction is None or detachment is None:
         nonempty = [x.strip() for x in lines if x.strip()]
         for idx, line in enumerate(nonempty):
             if re.match(r"^Strike Force\s*\(\d+\s*Points?\)$", line, re.IGNORECASE):
-                if idx >= 2 and army is None:
-                    army = nonempty[idx - 2]
+                if idx >= 2 and faction is None:
+                    faction = nonempty[idx - 2]
                 if idx + 1 < len(nonempty) and detachment is None:
                     detachment = nonempty[idx + 1]
                 break
 
-    # New Recruit style
-    if detachment is None:
-        for line in lines:
-            stripped = line.strip()
-            if stripped.lower().startswith("detachment:"):
-                detachment = stripped.split(":", 1)[1].strip()
-                break
+    if detachment:
+        detachment = re.sub(r"\s*\([^)]*\)\s*$", "", detachment).strip()
 
     return {
-        "army": army or "Unknown",
+        "faction": faction or "Unknown",
         "detachment": detachment or "Unknown",
         "total_points": total_points
     }
@@ -353,8 +367,6 @@ def parse_regular_formats(raw_text: str):
         "exported with",
         "detachment choice",
         "code chivalric",
-        "hammer of avernii",
-        "black spear task force",
     )
 
     ignored_section_names = {
@@ -435,7 +447,7 @@ def parse_regular_formats(raw_text: str):
                 continue
 
             current_unit = {
-                "name": unit_name,
+                "name": pretty_name(unit_name),
                 "pts": pts,
                 "enhancements": [],
                 "weapons": {}
@@ -457,7 +469,6 @@ def parse_regular_formats(raw_text: str):
             i += 1
             continue
 
-        # WTC style: 1 with Plasma decimator, Titanic feet, ...
         m = re.match(r"^(?P<count>\d+)\s+with\s+(?P<items>.+)$", stripped, re.IGNORECASE)
         if m:
             count = int(m.group("count"))
@@ -471,43 +482,27 @@ def parse_regular_formats(raw_text: str):
 
                 m2 = re.match(r"^(?P<count2>\d+)x\s+(?P<name>.+)$", item, re.IGNORECASE)
                 if m2:
-                    add_count(current_unit["weapons"], normalize_weapon_name(m2.group("name")), int(m2.group("count2")) * count)
+                    add_count(current_unit["weapons"], pretty_name(normalize_weapon_name(m2.group("name"))), int(m2.group("count2")) * count)
                 else:
-                    add_count(current_unit["weapons"], normalize_weapon_name(item), count)
+                    add_count(current_unit["weapons"], pretty_name(normalize_weapon_name(item)), count)
 
             consumed_indexes.add(i)
             i += 1
             continue
 
-        # Bullet item with inline payload after colon
         m = re.match(rf"^{BULLET_RE}\s*(?P<count>\d+)x\s+.+?:\s*(?P<items>.+)$", stripped, re.IGNORECASE)
         if m:
-            count = int(m.group("count"))
             items = m.group("items").strip()
-
-            split_items = split_top_level_commas(items)
-            for item in split_items:
-                item = item.strip()
-                if not item:
-                    continue
-                m2 = re.match(r"^(?P<count2>\d+)x\s+(?P<name>.+)$", item, re.IGNORECASE)
-                if m2:
-                    add_count(current_unit["weapons"], normalize_weapon_name(m2.group("name")), int(m2.group("count2")))
-                else:
-                    add_count(current_unit["weapons"], normalize_weapon_name(item), count)
-
+            add_weapons_from_text(current_unit["weapons"], items)
             consumed_indexes.add(i)
             i += 1
             continue
 
-        # Bullet item without colon
         m = re.match(rf"^{BULLET_RE}\s*(?P<count>\d+)x\s+(?P<item>.+)$", stripped, re.IGNORECASE)
         if m:
-            count = int(m.group("count"))
             item = m.group("item").strip()
             current_indent = get_indent(raw_line)
 
-            # Check if this is a subgroup/model header by looking ahead
             next_index = i + 1
             next_nonempty_index = None
 
@@ -520,9 +515,7 @@ def parse_regular_formats(raw_text: str):
             is_model_header = False
             if next_nonempty_index is not None:
                 next_raw = raw_lines[next_nonempty_index]
-                next_stripped = next_raw.strip()
                 next_indent = get_indent(next_raw)
-
                 if next_indent > current_indent:
                     is_model_header = True
 
@@ -544,7 +537,6 @@ def parse_regular_formats(raw_text: str):
                     if sub_indent <= subgroup_indent:
                         break
 
-                    # Enhancement nested under subgroup
                     enh_sub = parse_bullet_enhancement_line(sub_stripped)
                     if enh_sub:
                         current_unit["enhancements"].append(enh_sub)
@@ -552,74 +544,39 @@ def parse_regular_formats(raw_text: str):
                         j += 1
                         continue
 
-                    # Nested bullet weapon line like:
-                    # ◦ 4x Bolt pistol
                     sub_m = re.match(rf"^{BULLET_RE}\s*(?P<wcount>\d+)x\s+(?P<witem>.+)$", sub_stripped, re.IGNORECASE)
                     if sub_m:
-                        full_text_parts = [f"{sub_m.group('wcount')}x {sub_m.group('witem').strip()}"]
+                        weapon_count = int(sub_m.group("wcount"))
+                        weapon_item = sub_m.group("witem").strip()
+
+                        add_count(
+                            current_unit["weapons"],
+                            pretty_name(normalize_weapon_name(weapon_item)),
+                            weapon_count
+                        )
                         consumed_indexes.add(j)
-
-                        k = j + 1
-                        while k < len(raw_lines):
-                            cont_raw = raw_lines[k]
-                            cont_stripped = cont_raw.strip()
-
-                            if not cont_stripped:
-                                k += 1
-                                continue
-
-                            cont_indent = get_indent(cont_raw)
-
-                            # continuation lines under the same nested bullet item
-                            if cont_indent > sub_indent and not re.match(rf"^{BULLET_RE}", cont_stripped):
-                                full_text_parts.append(cont_stripped)
-                                consumed_indexes.add(k)
-                                k += 1
-                            else:
-                                break
-
-                        add_weapons_from_text(current_unit["weapons"], ", ".join(full_text_parts))
-                        j = k
+                        j += 1
                         continue
 
-                    # Continuation line with no bullet but direct counts
                     if re.match(r"^\d+x\s+.+$", sub_stripped, re.IGNORECASE):
                         add_weapons_from_text(current_unit["weapons"], sub_stripped)
                         consumed_indexes.add(j)
                         j += 1
                         continue
 
-                    # Free nested text we don't understand: leave it unconsumed so it can survive as normal text
                     j += 1
 
                 i = j
                 continue
 
             else:
-                # This is a direct weapon line
-                full_text_parts = [f"{count}x {item}"]
+                add_count(
+                    current_unit["weapons"],
+                    pretty_name(normalize_weapon_name(item)),
+                    int(m.group("count"))
+                )
                 consumed_indexes.add(i)
-
-                k = i + 1
-                while k < len(raw_lines):
-                    cont_raw = raw_lines[k]
-                    cont_stripped = cont_raw.strip()
-
-                    if not cont_stripped:
-                        k += 1
-                        continue
-
-                    cont_indent = get_indent(cont_raw)
-
-                    if cont_indent > current_indent and not re.match(rf"^{BULLET_RE}", cont_stripped):
-                        full_text_parts.append(cont_stripped)
-                        consumed_indexes.add(k)
-                        k += 1
-                    else:
-                        break
-
-                add_weapons_from_text(current_unit["weapons"], ", ".join(full_text_parts))
-                i = k
+                i += 1
                 continue
 
         i += 1
@@ -657,7 +614,7 @@ def parse_2hg_csv(text: str):
 
             if unit_name not in grouped:
                 grouped[unit_name] = {
-                    "name": unit_name,
+                    "name": pretty_name(unit_name),
                     "pts": None,
                     "enhancements": [],
                     "weapons": {}
@@ -668,7 +625,7 @@ def parse_2hg_csv(text: str):
                 item = item.strip()
                 if not item:
                     continue
-                add_count(grouped[unit_name]["weapons"], normalize_weapon_name(item), count)
+                add_count(grouped[unit_name]["weapons"], pretty_name(normalize_weapon_name(item)), count)
 
     except Exception as e:
         print(f"Failed to parse 2HG CSV: {e}")
@@ -728,7 +685,6 @@ def extract_extra_text(raw_text: str, consumed_indexes: set):
         if lowered in ignored:
             continue
 
-        # Ignore obvious list title lines with points
         if re.search(r"[\(\[]\d+\s*(pts?|points?)", stripped, re.IGNORECASE):
             continue
 
@@ -844,21 +800,23 @@ def render_output(units, metadata, extra_text, author_name):
     blocks = []
 
     header_lines = [
-        f"Army: {metadata['army']}",
+        f"Faction: {metadata['faction']}",
         f"Detachment: {metadata['detachment']}",
-        f"Total Points: {metadata['total_points'] if metadata['total_points'] is not None else 'Unknown'}",
+        f"Points: {metadata['total_points'] if metadata['total_points'] is not None else 'Unknown'}",
     ]
     blocks.append("\n".join(header_lines))
 
     for unit in units:
         unit_lines = [f"**{unit['name']}** [{unit['pts']}p]"]
 
-        for enhancement in unit["enhancements"]:
-            unit_lines.append(f"           - Enhancement: {enhancement}")
+        weapon_bits = [f"{count}x {weapon}" for weapon, count in unit["weapons"].items()]
+        weapon_line = "           - " + ", ".join(weapon_bits)
 
-        for weapon_name, count in unit["weapons"].items():
-            unit_lines.append(f"           - {weapon_name} x{count}")
+        if unit["enhancements"]:
+            enh_text = " ; ".join(f"Enhancement: {x}" for x in unit["enhancements"])
+            weapon_line += f" [{enh_text}]"
 
+        unit_lines.append(weapon_line)
         blocks.append("\n".join(unit_lines))
 
     if extra_text:
@@ -907,7 +865,6 @@ async def process_pending_list(channel_id, author_id):
     author_name = entry["author_name"]
 
     parsed, total_points, unit_count, points_found, metadata, extra_text = shorten_warhammer_list(combined_text)
-    print(f"Pending parse result: total_points={total_points}, unit_count={unit_count}, points_found={points_found}")
 
     if parsed != "No valid units found.":
         rendered = render_output(parsed, metadata, extra_text, author_name)
