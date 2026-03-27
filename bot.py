@@ -810,8 +810,7 @@ def render_output(units, metadata, extra_text, author_name):
         unit_lines = [f"**{unit['name']}** [{unit['pts']}p]"]
 
         weapon_bits = [f"{count}x {weapon}" for weapon, count in unit["weapons"].items()]
-        weapon_line = "           - " + ", ".join(weapon_bits)
-
+	weapon_line = "- " + ", ".join(weapon_bits)
         if unit["enhancements"]:
             enh_text = " ; ".join(f"Enhancement: {x}" for x in unit["enhancements"])
             weapon_line += f" [{enh_text}]"
