@@ -385,35 +385,38 @@ def parse_regular_formats(raw_text: str):
             i += 1
             continue
 
-        m = re.match(rf"^{BULLET_RE}\s*(?P<count>\d+)x\s+(?P<item>.+)$", stripped, re.IGNORECASE)
-        if m:
-            count = int(m.group("count"))
-            item = m.group("item").strip()
+m = re.match(rf"^{BULLET_RE}\s*(?P<count>\d+)x\s+(?P<item>.+)$", stripped, re.IGNORECASE)
+if m:
+    count = int(m.group("count"))
+    item = m.group("item").strip()
 
-            is_model_header = False
-            next_index = i + 1
-            current_indent = len(raw_line) - len(raw_line.lstrip(" "))
+    current_indent = len(raw_line) - len(raw_line.lstrip(" "))
 
-            while next_index < len(raw_lines):
-                next_raw = raw_lines[next_index]
-                next_stripped = next_raw.strip()
+    # Build full weapon block (include indented continuation lines)
+    full_text = item
 
-                if not next_stripped:
-                    next_index += 1
-                    continue
+    next_index = i + 1
+    while next_index < len(raw_lines):
+        next_raw = raw_lines[next_index]
+        next_stripped = next_raw.strip()
 
-                next_indent = len(next_raw) - len(next_raw.lstrip(" "))
-
-                if re.match(rf"^{BULLET_RE}", next_stripped) and next_indent > current_indent:
-                    is_model_header = True
-
-                break
-
-            if not is_model_header:
-                add_weapons_from_text(current_unit["weapons"], item, count)
-
-            i += 1
+        if not next_stripped:
+            next_index += 1
             continue
+
+        next_indent = len(next_raw) - len(next_raw.lstrip(" "))
+
+        # If it's more indented and NOT a new bullet → continuation
+        if next_indent > current_indent and not re.match(rf"^{BULLET_RE}", next_stripped):
+            full_text += ", " + next_stripped
+            next_index += 1
+        else:
+            break
+
+    add_weapons_from_text(current_unit["weapons"], full_text, count)
+
+    i = next_index
+    continue
 
         i += 1
 
