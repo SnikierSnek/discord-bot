@@ -1,6 +1,8 @@
 import os
 import re
+import csv
 import asyncio
+from io import StringIO
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -43,15 +45,15 @@ def run_health_server():
     server.serve_forever()
 
 
-def clean_unit_name(name):
+def clean_unit_name(name: str) -> str:
     name = name.strip()
-    name = re.sub(r"^[A-Za-z]+\d+:\s*", "", name)
-    name = re.sub(r"^\d+x\s+", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"^[A-Za-z]+\d+:\s*", "", name)   # Char1:
+    name = re.sub(r"^\d+x\s+", "", name, flags=re.IGNORECASE)  # 1x Unit
     name = re.sub(r"[\-–—:;,]+$", "", name).strip()
     return name
 
 
-def split_long_message(text, max_len=MAX_MESSAGE_LENGTH):
+def split_long_message(text: str, max_len: int = MAX_MESSAGE_LENGTH):
     lines = text.splitlines()
     chunks = []
     current = ""
@@ -71,29 +73,143 @@ def split_long_message(text, max_len=MAX_MESSAGE_LENGTH):
     return chunks
 
 
-def extract_inline_enhancements(rest_text):
+def add_count(counter: dict, key: str, amount: int):
+    key = key.strip()
+    if not key:
+        return
+    counter[key] = counter.get(key, 0) + amount
+
+
+def split_top_level_commas(text: str):
+    parts = []
+    current = []
+    depth = 0
+
+    for ch in text:
+        if ch == "(":
+            depth += 1
+            current.append(ch)
+        elif ch == ")":
+            depth = max(0, depth - 1)
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+        else:
+            current.append(ch)
+
+    final = "".join(current).strip()
+    if final:
+        parts.append(final)
+
+    return parts
+
+
+def normalize_weapon_name(name: str) -> str:
+    name = name.strip()
+    name = re.sub(r"^\d+x\s+", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"^\d+\s+", "", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    return name
+
+
+def is_ignored_weapon_item(item: str) -> bool:
+    lowered = item.strip().lower()
+    ignored = {
+        "warlord",
+        "nurgle daemons are visible",
+    }
+    return lowered in ignored or not lowered
+
+
+def extract_inline_enhancements_and_strip(text: str):
     """
-    Finds inline enhancements like:
+    Extract inline enhancements like:
+    Augury Halo [20 pts]
     Font of Spores (Aura) [20 pts]
-    Droning Shroud (Aura) [35 pts]
-    Cankerblight (Aura) [15 pts]
+
+    Returns:
+        enhancements (list[str])
+        stripped_text (str)
     """
     enhancements = []
 
     pattern = re.compile(
-        r"([A-Za-z][A-Za-z'’\-\s]+?)(?:\s*\(Aura\))?\s*\[(\d+)\s*(?:pts?|points?|p)\]",
+        r"(?P<full>(?P<name>[A-Za-z][A-Za-z0-9'’\-\s]+?)(?:\s*\(Aura\))?\s*\[(?P<pts>\d+)\s*(?:pts?|points?|p)\])",
         re.IGNORECASE,
     )
 
-    for match in pattern.finditer(rest_text):
-        name = match.group(1).strip()
-        pts = match.group(2).strip()
+    def replacer(match):
+        name = match.group("name").strip()
+        pts = match.group("pts").strip()
         enhancements.append(f"{name} +{pts}p")
+        return ""
 
-    return enhancements
+    stripped = pattern.sub(replacer, text)
+
+    # Clean up repeated commas/spaces after removals
+    stripped = re.sub(r"\s*,\s*,", ", ", stripped)
+    stripped = re.sub(r"^\s*,\s*", "", stripped)
+    stripped = re.sub(r"\s*,\s*$", "", stripped)
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+
+    return enhancements, stripped
 
 
-def parse_enhancement_line(line):
+def add_weapons_from_text(counter: dict, text: str, multiplier: int = 1):
+    """
+    Parse a text segment of weapons and add them to a weapon counter.
+    Works for:
+      Plasma decimator, Titanic feet, 2x Twin meltagun
+      Astartes shield, Power weapon
+      2 shieldbreaker missile launchers and twin siegebreaker cannon (2x Shieldbreaker missile launcher, Twin siegebreaker cannon)
+
+    Strategy:
+    - If a parenthetical canonical weapon list exists, use that.
+    - Otherwise split top-level commas.
+    """
+    if not text:
+        return
+
+    text = text.strip()
+
+    # If a parenthetical canonical list exists, use it
+    paren_match = re.search(r"\(([^()]*)\)\s*$", text)
+    if paren_match:
+        inside = paren_match.group(1).strip()
+        if inside:
+            text = inside
+
+    items = split_top_level_commas(text)
+
+    for item in items:
+        item = item.strip()
+        if not item or is_ignored_weapon_item(item):
+            continue
+
+        # "2x Twin meltagun"
+        m = re.match(r"^(?P<count>\d+)x\s+(?P<name>.+)$", item, re.IGNORECASE)
+        if m:
+            count = int(m.group("count"))
+            name = normalize_weapon_name(m.group("name"))
+            add_count(counter, name, count * multiplier)
+            continue
+
+        # "2 Acastus autocannons"
+        m = re.match(r"^(?P<count>\d+)\s+(?P<name>.+)$", item, re.IGNORECASE)
+        if m and not item.lower().startswith("1 with") and not item.lower().startswith("2 with"):
+            count = int(m.group("count"))
+            name = normalize_weapon_name(m.group("name"))
+            add_count(counter, name, count * multiplier)
+            continue
+
+        # plain weapon
+        add_count(counter, normalize_weapon_name(item), 1 * multiplier)
+
+
+def parse_standalone_enhancement_line(line: str):
     stripped = line.strip()
     stripped = re.sub(r"^[•\-\*]\s*", "", stripped)
 
@@ -103,25 +219,40 @@ def parse_enhancement_line(line):
         re.IGNORECASE,
     )
     if m:
-        enh_name = m.group("name").strip()
-        enh_name = re.sub(r"\s*\(Aura\)\s*$", "", enh_name, flags=re.IGNORECASE)
+        enh_name = re.sub(r"\s*\(Aura\)\s*$", "", m.group("name").strip(), flags=re.IGNORECASE)
         enh_pts = m.group("pts").strip()
         return f"{enh_name} +{enh_pts}p"
 
     m = re.match(r"^Enhancement:\s*(?P<name>.+?)\s*$", stripped, re.IGNORECASE)
     if m:
-        enh_name = m.group("name").strip()
-        enh_name = re.sub(r"\s*\(Aura\)\s*$", "", enh_name, flags=re.IGNORECASE)
+        enh_name = re.sub(r"\s*\(Aura\)\s*$", "", m.group("name").strip(), flags=re.IGNORECASE)
         return enh_name
 
     return None
 
 
-def shorten_warhammer_list(raw_text):
+def format_unit_output(unit: dict) -> str:
+    parts = [unit["name"]]
+
+    if unit["enhancements"]:
+        parts.append(f"[{', '.join(unit['enhancements'])}]")
+
+    if unit["weapons"]:
+        weapon_bits = [f"{name} x{count}" for name, count in unit["weapons"].items()]
+        parts.append(f"[{' ; '.join(weapon_bits)}]")
+
+    if unit.get("pts") is not None:
+        parts.append(f"({unit['pts']}p)")
+
+    return " ".join(parts)
+
+
+def parse_regular_formats(raw_text: str):
     lines = raw_text.splitlines()
     results = []
     current_unit = None
     total_points = 0
+    points_found = False
 
     ignored_headers = (
         "+ faction keyword",
@@ -142,6 +273,7 @@ def shorten_warhammer_list(raw_text):
         "army roster",
         "exported with",
         "detachment choice",
+        "code chivalric",
     )
 
     ignored_section_names = {
@@ -160,46 +292,46 @@ def shorten_warhammer_list(raw_text):
         "dedicated transports",
         "other datasheets",
         "allied units",
+        "configuration",
     }
 
     for raw_line in lines:
-        line = raw_line.strip()
+        line = raw_line.rstrip()
+        stripped = line.strip()
 
-        if not line:
+        if not stripped:
             continue
 
-        lower_line = line.lower()
+        lower_line = stripped.lower()
 
-        if set(line) == {"+"}:
+        if set(stripped) == {"+"}:
             continue
 
         if lower_line.startswith(ignored_headers):
             continue
 
-        # Ignore model-detail bullet lines entirely
-        if re.match(r"^[•\-\*]\s*", line):
-            continue
-
         # Standalone enhancement line
-        enhancement = parse_enhancement_line(line)
-        if enhancement and current_unit is not None:
-            current_unit["enhancements"].append(enhancement)
+        enh = parse_standalone_enhancement_line(stripped)
+        if enh and current_unit is not None:
+            current_unit["enhancements"].append(enh)
             continue
 
-        # Match top-level unit lines with either (...) or [...]
+        # Top-level unit line with (...) or [...]
         unit_match = re.match(
             r"^(?P<name>.+?)\s*[\(\[](?P<pts>\d+)\s*(?:pts?|points?|p)[\)\]]\s*:?\s*(?P<rest>.*)$",
-            line,
+            stripped,
             re.IGNORECASE,
         )
 
-        if unit_match:
+        if unit_match and not stripped.startswith(("•", "-", "*")):
             unit_name = clean_unit_name(unit_match.group("name"))
-            pts = int(unit_match.group("pts").strip())
+            pts = int(unit_match.group("pts"))
             rest = unit_match.group("rest").strip()
 
-            # Skip army title lines like: Chaos - Chaos Daemons - pleg - [2000 pts]
-            if not results and pts >= 1500 and "-" in unit_name.lower():
+            # Skip roster title lines like:
+            # Chaos - Chaos Daemons - pleg - [2000 pts]
+            # Imperium - Imperial Knights - test - [1990 pts]
+            if not results and pts >= 1500 and " - " in unit_name:
                 current_unit = None
                 continue
 
@@ -208,39 +340,146 @@ def shorten_warhammer_list(raw_text):
                 current_unit = None
                 continue
 
-            # Skip obvious model-detail lines if they somehow slip through
-            if unit_name.lower().startswith(("1x ", "2x ", "3x ", "4x ", "5x ", "6x ", "7x ", "8x ", "9x ")):
-                continue
-
+            # Create a new unit
             current_unit = {
                 "name": unit_name,
                 "pts": pts,
-                "enhancements": []
+                "enhancements": [],
+                "weapons": {}
             }
-
-            # Inline enhancements on same line
-            if rest:
-                current_unit["enhancements"].extend(extract_inline_enhancements(rest))
-
             results.append(current_unit)
             total_points += pts
+            points_found = True
+
+            # Parse inline enhancements + weapons
+            if rest:
+                inline_enh, stripped_rest = extract_inline_enhancements_and_strip(rest)
+                current_unit["enhancements"].extend(inline_enh)
+                add_weapons_from_text(current_unit["weapons"], stripped_rest, 1)
+
             continue
 
-    formatted = []
-    for unit in results:
-        if unit["enhancements"]:
-            enh_text = ", ".join(unit["enhancements"])
-            formatted.append(f"{unit['name']} [{enh_text}] ({unit['pts']}p)")
-        else:
-            formatted.append(f"{unit['name']} ({unit['pts']}p)")
+        # If we don't have a current unit, nothing below can belong to a unit
+        if current_unit is None:
+            continue
 
-    if not formatted:
-        return "No valid units found.", 0, 0
+        # Ignore pure sub-model header lines with no weapons
+        # e.g. "• 1x Watch Sergeant"
+        if re.match(r"^[•\-\*]\s*\d+x\s+[A-Za-z].*$", stripped) and ":" not in stripped and " with " not in stripped.lower():
+            continue
 
-    return "\n".join(formatted), total_points, len(results)
+        # WTC / GW / NR model-with-weapon patterns
+
+        # "1 with Plasma decimator, Titanic feet, 2x Twin meltagun"
+        m = re.match(r"^(?P<count>\d+)\s+with\s+(?P<items>.+)$", stripped, re.IGNORECASE)
+        if m:
+            count = int(m.group("count"))
+            items = m.group("items").strip()
+            add_weapons_from_text(current_unit["weapons"], items, count)
+            continue
+
+        # "• 4x Veteran w/ Astartes shield and power weapon: Astartes shield, Power weapon"
+        m = re.match(r"^[•\-\*]\s*(?P<count>\d+)x\s+.+?:\s*(?P<items>.+)$", stripped, re.IGNORECASE)
+        if m:
+            count = int(m.group("count"))
+            items = m.group("items").strip()
+            add_weapons_from_text(current_unit["weapons"], items, count)
+            continue
+
+        # "• 1x Watch Sergeant: Close combat weapon, Frag cannon"
+        m = re.match(r"^[•\-\*]\s*(?P<count>\d+)x\s+.+?:\s*(?P<items>.+)$", stripped, re.IGNORECASE)
+        if m:
+            count = int(m.group("count"))
+            items = m.group("items").strip()
+            add_weapons_from_text(current_unit["weapons"], items, count)
+            continue
+
+        # "• 4x Power weapon"
+        m = re.match(r"^[•\-\*]\s*(?P<count>\d+)x\s+(?P<item>.+)$", stripped, re.IGNORECASE)
+        if m:
+            count = int(m.group("count"))
+            item = m.group("item").strip()
+            add_weapons_from_text(current_unit["weapons"], item, count)
+            continue
+
+        # "• 1x Plasma decimator"
+        m = re.match(r"^[•\-\*]\s*(?P<count>\d+)x\s+(?P<item>.+)$", stripped, re.IGNORECASE)
+        if m:
+            count = int(m.group("count"))
+            item = m.group("item").strip()
+            add_weapons_from_text(current_unit["weapons"], item, count)
+            continue
+
+    return results, total_points, points_found
 
 
-def looks_like_warhammer_list(text):
+def looks_like_2hg_csv(text: str) -> bool:
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    if not lines:
+        return False
+    return lines[0].startswith('"Warhammer 40,000 10th Edition"')
+
+
+def parse_2hg_csv(text: str):
+    """
+    2HG does not include points in the sample you gave.
+    So this parser can summarize weapons, but total_points stays 0.
+    Repeated unit names are grouped together.
+    """
+    grouped = {}
+
+    try:
+        reader = csv.reader(StringIO(text))
+        for row in reader:
+            if len(row) < 6:
+                continue
+
+            unit_name = row[2].strip()
+            count_str = row[4].strip()
+            weapons_text = row[5].strip()
+
+            if not unit_name:
+                continue
+
+            try:
+                count = int(count_str)
+            except ValueError:
+                count = 1
+
+            if unit_name not in grouped:
+                grouped[unit_name] = {
+                    "name": unit_name,
+                    "pts": None,
+                    "enhancements": [],
+                    "weapons": {}
+                }
+
+            add_weapons_from_text(grouped[unit_name]["weapons"], weapons_text, count)
+
+    except Exception as e:
+        print(f"Failed to parse 2HG CSV: {e}")
+        return [], 0, False
+
+    return list(grouped.values()), 0, False
+
+
+def shorten_warhammer_list(raw_text: str):
+    if looks_like_2hg_csv(raw_text):
+        units, total_points, points_found = parse_2hg_csv(raw_text)
+    else:
+        units, total_points, points_found = parse_regular_formats(raw_text)
+
+    if not units:
+        return "No valid units found.", 0, 0, False
+
+    formatted = [format_unit_output(unit) for unit in units]
+    return "\n".join(formatted), total_points, len(units), points_found
+
+
+def looks_like_warhammer_list(text: str) -> bool:
+    if looks_like_2hg_csv(text):
+        return True
+
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if len(lines) < 2:
         return False
@@ -248,23 +487,20 @@ def looks_like_warhammer_list(text):
     unit_like_count = 0
 
     for line in lines:
-        if re.match(
-            r"^.+?[\(\[]\d+\s*(?:pts?|points?|p)[\)\]]\s*:?\s*$",
-            line,
-            re.IGNORECASE,
-        ):
+        if re.match(r"^.+?[\(\[]\d+\s*(?:pts?|points?|p)[\)\]]", line, re.IGNORECASE):
             unit_like_count += 1
-        elif re.match(
-            r"^.+?[\(\[]\d+\s*(?:pts?|points?|p)[\)\]]\s*:?\s*.+$",
-            line,
-            re.IGNORECASE,
-        ):
+        elif re.match(r"^[•\-\*]\s*\d+x\s+.+?:\s*.+$", line, re.IGNORECASE):
+            unit_like_count += 1
+        elif re.match(r"^\d+\s+with\s+.+$", line, re.IGNORECASE):
             unit_like_count += 1
 
     return unit_like_count >= 2
 
 
-def contains_list_content(text):
+def contains_list_content(text: str) -> bool:
+    if looks_like_2hg_csv(text):
+        return True
+
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return False
@@ -274,12 +510,14 @@ def contains_list_content(text):
             return True
         if re.match(r"^[•\-\*]?\s*Enhancement:\s*.+$", line, re.IGNORECASE):
             return True
+        if re.match(r"^\d+\s+with\s+.+$", line, re.IGNORECASE):
+            return True
 
     return False
 
 
 async def read_text_attachments(message):
-    allowed_extensions = (".txt", ".log", ".list", ".md")
+    allowed_extensions = (".txt", ".log", ".list", ".md", ".csv")
     parts = []
 
     for attachment in message.attachments:
@@ -294,7 +532,6 @@ async def read_text_attachments(message):
 
         try:
             data = await attachment.read()
-
             try:
                 text = data.decode("utf-8")
             except UnicodeDecodeError:
@@ -311,16 +548,16 @@ async def read_text_attachments(message):
 
 
 async def get_message_list_text(message):
-    content_parts = []
+    parts = []
 
     if message.content and message.content.strip():
-        content_parts.append(message.content.strip())
+        parts.append(message.content.strip())
 
     attachment_text = await read_text_attachments(message)
     if attachment_text.strip():
-        content_parts.append(attachment_text)
+        parts.append(attachment_text)
 
-    return "\n".join(content_parts).strip()
+    return "\n".join(parts).strip()
 
 
 async def send_compacted_list(channel, text):
@@ -361,15 +598,18 @@ async def process_pending_list(channel_id, author_id):
     combined_text = "\n".join(entry["parts"])
     original_messages = entry["messages"]
 
-    result, total_points, unit_count = shorten_warhammer_list(combined_text)
-    print(f"Pending parse result: total_points={total_points}, unit_count={unit_count}")
+    result, total_points, unit_count, points_found = shorten_warhammer_list(combined_text)
+    print(f"Pending parse result: total_points={total_points}, unit_count={unit_count}, points_found={points_found}")
 
     if result != "No valid units found.":
         await send_compacted_list(channel, result)
         failed = await delete_original_messages(original_messages)
 
         if failed:
-            await channel.send("I compacted the list, but I could not delete the original messages. Please check that I have Manage Messages permission.")
+            await channel.send(
+                "I compacted the list, but I could not delete the original messages. "
+                "Please check that I have Manage Messages permission."
+            )
 
 
 async def delayed_process_list(channel_id, author_id):
@@ -391,7 +631,6 @@ async def on_message(message):
         return
 
     content = await get_message_list_text(message)
-
     if not content:
         return
 
@@ -399,7 +638,7 @@ async def on_message(message):
 
     if content.startswith("!wl"):
         text = content[3:].strip()
-        result, total_points, unit_count = shorten_warhammer_list(text)
+        result, total_points, unit_count, points_found = shorten_warhammer_list(text)
 
         if result != "No valid units found.":
             await send_compacted_list(message.channel, result)
@@ -407,13 +646,17 @@ async def on_message(message):
             try:
                 await message.delete()
             except discord.Forbidden:
-                await message.channel.send("I compacted the list, but I could not delete the original command message. Please check that I have Manage Messages permission.")
+                await message.channel.send(
+                    "I compacted the list, but I could not delete the original command message. "
+                    "Please check that I have Manage Messages permission."
+                )
             except discord.NotFound:
                 pass
             except discord.HTTPException as e:
                 print(f"Could not delete command message: {e}")
-                await message.channel.send("I compacted the list, but I could not delete the original command message.")
-
+                await message.channel.send(
+                    "I compacted the list, but I could not delete the original command message."
+                )
         return
 
     if key in pending_lists:
@@ -422,12 +665,14 @@ async def on_message(message):
             pending_lists[key]["messages"].append(message)
 
             combined_text = "\n".join(pending_lists[key]["parts"])
-            result, total_points, unit_count = shorten_warhammer_list(combined_text)
+            result, total_points, unit_count, points_found = shorten_warhammer_list(combined_text)
 
             old_task = pending_lists[key]["task"]
             old_task.cancel()
 
-            if total_points >= WAIT_THRESHOLD_POINTS:
+            # If points are found and threshold is reached, send immediately.
+            # If no points are found (e.g. 2HG CSV), keep waiting and then send after timer.
+            if points_found and total_points >= WAIT_THRESHOLD_POINTS:
                 await process_pending_list(message.channel.id, message.author.id)
             else:
                 new_task = asyncio.create_task(
@@ -437,24 +682,29 @@ async def on_message(message):
             return
 
     if looks_like_warhammer_list(content):
-        result, total_points, unit_count = shorten_warhammer_list(content)
+        result, total_points, unit_count, points_found = shorten_warhammer_list(content)
 
         if result == "No valid units found.":
             await bot.process_commands(message)
             return
 
-        if total_points >= WAIT_THRESHOLD_POINTS:
+        if points_found and total_points >= WAIT_THRESHOLD_POINTS:
             await send_compacted_list(message.channel, result)
 
             try:
                 await message.delete()
             except discord.Forbidden:
-                await message.channel.send("I compacted the list, but I could not delete the original message. Please check that I have Manage Messages permission.")
+                await message.channel.send(
+                    "I compacted the list, but I could not delete the original message. "
+                    "Please check that I have Manage Messages permission."
+                )
             except discord.NotFound:
                 pass
             except discord.HTTPException as e:
                 print(f"Could not delete message: {e}")
-                await message.channel.send("I compacted the list, but I could not delete the original message.")
+                await message.channel.send(
+                    "I compacted the list, but I could not delete the original message."
+                )
         else:
             task = asyncio.create_task(
                 delayed_process_list(message.channel.id, message.author.id)
