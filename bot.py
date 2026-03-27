@@ -19,6 +19,8 @@ WAIT_SECONDS = 15
 MAX_MESSAGE_LENGTH = 1950
 MAX_ATTACHMENT_BYTES = 1_000_000
 
+BULLET_RE = r"[•◦\-\*]"
+
 intents = discord.Intents.default()
 intents.message_content = True
 
@@ -185,7 +187,7 @@ def add_weapons_from_text(counter: dict, text: str, multiplier: int = 1):
 
 def parse_standalone_enhancement_line(line: str):
     stripped = line.strip()
-    stripped = re.sub(r"^[•\-\*]\s*", "", stripped)
+    stripped = re.sub(rf"^{BULLET_RE}\s*", "", stripped)
 
     m = re.match(
         r"^Enhancement:\s*(?P<name>.+?)\s*\(\+(?P<pts>\d+)\s*(?:pts?|points?|p)\)\s*$",
@@ -206,7 +208,7 @@ def parse_standalone_enhancement_line(line: str):
 
 
 def parse_bullet_enhancement_line(stripped: str):
-    text = re.sub(r"^[•\-\*]\s*", "", stripped).strip()
+    text = re.sub(rf"^{BULLET_RE}\s*", "", stripped).strip()
 
     m = re.match(
         r"^(?P<name>.+?)\s*\(\+(?P<pts>\d+)\s*(?:pts?|points?|p)\)\s*$",
@@ -217,6 +219,14 @@ def parse_bullet_enhancement_line(stripped: str):
         name = re.sub(r"\s*\(Aura\)\s*$", "", m.group("name").strip(), flags=re.IGNORECASE)
         pts = m.group("pts").strip()
         return f"{name} +{pts}p"
+
+    m = re.match(
+        r"^(?:Enhancements?|Enhancement):\s*(?P<name>.+)$",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group("name").strip()
 
     return None
 
@@ -322,12 +332,12 @@ def parse_regular_formats(raw_text: str):
             re.IGNORECASE,
         )
 
-        if unit_match and not stripped.startswith(("•", "-", "*")):
+        if unit_match and not re.match(rf"^{BULLET_RE}", stripped):
             unit_name = clean_unit_name(unit_match.group("name"))
             pts = int(unit_match.group("pts"))
             rest = unit_match.group("rest").strip()
 
-            if not results and pts >= 1500 and " - " in unit_name:
+            if not results and pts >= 1500:
                 current_unit = None
                 i += 1
                 continue
@@ -367,7 +377,7 @@ def parse_regular_formats(raw_text: str):
             i += 1
             continue
 
-        m = re.match(r"^[•\-\*]\s*(?P<count>\d+)x\s+.+?:\s*(?P<items>.+)$", stripped, re.IGNORECASE)
+        m = re.match(rf"^{BULLET_RE}\s*(?P<count>\d+)x\s+.+?:\s*(?P<items>.+)$", stripped, re.IGNORECASE)
         if m:
             count = int(m.group("count"))
             items = m.group("items").strip()
@@ -375,7 +385,7 @@ def parse_regular_formats(raw_text: str):
             i += 1
             continue
 
-        m = re.match(r"^[•\-\*]\s*(?P<count>\d+)x\s+(?P<item>.+)$", stripped, re.IGNORECASE)
+        m = re.match(rf"^{BULLET_RE}\s*(?P<count>\d+)x\s+(?P<item>.+)$", stripped, re.IGNORECASE)
         if m:
             count = int(m.group("count"))
             item = m.group("item").strip()
@@ -394,7 +404,7 @@ def parse_regular_formats(raw_text: str):
 
                 next_indent = len(next_raw) - len(next_raw.lstrip(" "))
 
-                if next_stripped.startswith(("•", "-", "*")) and next_indent > current_indent and ":" not in stripped:
+                if re.match(rf"^{BULLET_RE}", next_stripped) and next_indent > current_indent:
                     is_model_header = True
 
                 break
@@ -481,7 +491,9 @@ def looks_like_warhammer_list(text: str) -> bool:
     for line in lines:
         if re.match(r"^.+?[\(\[]\d+\s*(?:pts?|points?|p)[\)\]]", line, re.IGNORECASE):
             unit_like_count += 1
-        elif re.match(r"^[•\-\*]\s*\d+x\s+.+?:\s*.+$", line, re.IGNORECASE):
+        elif re.match(rf"^{BULLET_RE}\s*\d+x\s+.+?:\s*.+$", line, re.IGNORECASE):
+            unit_like_count += 1
+        elif re.match(rf"^{BULLET_RE}\s*\d+x\s+.+$", line, re.IGNORECASE):
             unit_like_count += 1
         elif re.match(r"^\d+\s+with\s+.+$", line, re.IGNORECASE):
             unit_like_count += 1
@@ -500,9 +512,11 @@ def contains_list_content(text: str) -> bool:
     for line in lines:
         if re.match(r"^.+?[\(\[]\d+\s*(?:pts?|points?|p)[\)\]]", line, re.IGNORECASE):
             return True
-        if re.match(r"^[•\-\*]?\s*Enhancement:\s*.+$", line, re.IGNORECASE):
+        if re.match(rf"^{BULLET_RE}?\s*Enhancement:\s*.+$", line, re.IGNORECASE):
             return True
         if re.match(r"^\d+\s+with\s+.+$", line, re.IGNORECASE):
+            return True
+        if re.match(rf"^{BULLET_RE}\s*\d+x\s+.+$", line, re.IGNORECASE):
             return True
 
     return False
